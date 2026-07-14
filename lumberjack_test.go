@@ -695,6 +695,69 @@ func TestLogger(t *testing.T) {
 		equals(true, l.LocalTime, t)
 		equals(true, l.Compress, t)
 	})
+
+	t.Run("stops_mill_goroutine", func(t *testing.T) {
+		dir := makeTempDir("TestCloseStopsMill", t)
+		defer os.RemoveAll(dir)
+
+		l := &Logger{
+			Filename: logFile(dir),
+			MaxSize:  10,
+		}
+
+		b := []byte("boo!")
+		_, err := l.Write(b)
+		isNil(err, t)
+
+		newFakeTime()
+
+		// Trigger rotation so the mill goroutine is started.
+		b2 := []byte("foooooo!")
+		_, err = l.Write(b2)
+		isNil(err, t)
+		assert(l.millCh != nil, t, "mill goroutine should have been started")
+
+		// Close waits for millRun to exit before returning.
+		err = l.Close()
+		isNil(err, t)
+		equals(true, l.closed, t)
+		assert(l.millCh == nil, t, "millCh should be nil after Close")
+	})
+
+	t.Run("idempotent", func(t *testing.T) {
+		dir := makeTempDir("TestCloseIdempotent", t)
+		defer os.RemoveAll(dir)
+
+		l := &Logger{
+			Filename: logFile(dir),
+			MaxSize:  10,
+		}
+
+		_, err := l.Write([]byte("boo!"))
+		isNil(err, t)
+
+		isNil(l.Close(), t)
+		isNil(l.Close(), t)
+	})
+
+	t.Run("write_after_close", func(t *testing.T) {
+		dir := makeTempDir("TestWriteAfterClose", t)
+		defer os.RemoveAll(dir)
+
+		l := &Logger{
+			Filename: logFile(dir),
+			MaxSize:  10,
+		}
+
+		_, err := l.Write([]byte("boo!"))
+		isNil(err, t)
+
+		isNil(l.Close(), t)
+
+		n, err := l.Write([]byte("after close"))
+		equals(0, n, t)
+		equals(ErrClosed, err, t)
+	})
 }
 
 // makeTempDir creates a file with a semi-unique name in the OS temp directory.
