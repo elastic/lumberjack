@@ -1,0 +1,6 @@
+Elastic Lumberjack
+Copyright 2026 Elasticsearch B.V.
+
+This is a hard fork of github.com/natefinch/lumberjack
+(gopkg.in/natefinch/lumberjack.v2), originally developed by Nate Finch
+and licensed under the MIT License.
