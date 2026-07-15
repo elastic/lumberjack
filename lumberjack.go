@@ -1,13 +1,5 @@
 // Package lumberjack provides a rolling logger.
 //
-// Note that this is v2.0 of lumberjack, and should be imported using gopkg.in
-// thusly:
-//
-//   import "gopkg.in/natefinch/lumberjack.v2"
-//
-// The package name remains simply lumberjack, and the code resides at
-// https://github.com/natefinch/lumberjack under the v2.0 branch.
-//
 // Lumberjack is intended to be one part of a logging infrastructure.
 // It is not an all-in-one solution, but instead is a pluggable
 // component at the bottom of the logging stack that simply controls the files
@@ -66,7 +58,7 @@ var _ io.WriteCloser = (*Logger)(nil)
 // `/var/log/foo/server.log`, a backup created at 6:30pm on Nov 11 2016 would
 // use the filename `/var/log/foo/server-2016-11-04T18-30-00.000.log`
 //
-// Cleaning Up Old Log Files
+// # Cleaning Up Old Log Files
 //
 // Whenever a new logfile gets created, old log files may be deleted.  The most
 // recent files according to the encoded timestamp will be retained, up to a
@@ -107,12 +99,12 @@ type Logger struct {
 	// using gzip. The default is not to perform compression.
 	Compress bool `json:"compress" yaml:"compress"`
 
-	size int64
-	file *os.File
-	mu   sync.Mutex
-
-	millCh    chan bool
-	startMill sync.Once
+	mu       sync.Mutex
+	size     int64
+	file     *os.File
+	millCh   chan bool
+	millDone chan struct{}
+	closed   bool
 }
 
 var (
@@ -128,6 +120,9 @@ var (
 	megabyte = 1024 * 1024
 )
 
+// ErrClosed is returned by Write after the Logger has been closed.
+var ErrClosed = errors.New("lumberjack: write to closed logger")
+
 // Write implements io.Writer.  If a write would cause the log file to be larger
 // than MaxSize, the file is closed, renamed to include a timestamp of the
 // current time, and a new log file is created using the original log file name.
@@ -135,6 +130,10 @@ var (
 func (l *Logger) Write(p []byte) (n int, err error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+
+	if l.closed {
+		return 0, ErrClosed
+	}
 
 	writeLen := int64(len(p))
 	if writeLen > l.max() {
@@ -165,7 +164,14 @@ func (l *Logger) Write(p []byte) (n int, err error) {
 func (l *Logger) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return l.close()
+	l.closed = true
+	err := l.close()
+	if l.millCh != nil {
+		close(l.millCh)
+		l.millCh = nil
+		<-l.millDone
+	}
+	return err
 }
 
 // close closes the file if it is open.
@@ -375,9 +381,9 @@ func (l *Logger) millRunOnce() error {
 
 // millRun runs in a goroutine to manage post-rotation compression and removal
 // of old log files.
-func (l *Logger) millRun() {
-	for range l.millCh {
-		// what am I going to do, log this?
+func (l *Logger) millRun(ch chan bool) {
+	defer close(l.millDone)
+	for range ch {
 		_ = l.millRunOnce()
 	}
 }
@@ -385,10 +391,11 @@ func (l *Logger) millRun() {
 // mill performs post-rotation compression and removal of stale log files,
 // starting the mill goroutine if necessary.
 func (l *Logger) mill() {
-	l.startMill.Do(func() {
+	if l.millCh == nil {
 		l.millCh = make(chan bool, 1)
-		go l.millRun()
-	})
+		l.millDone = make(chan struct{})
+		go l.millRun(l.millCh)
+	}
 	select {
 	case l.millCh <- true:
 	default:
